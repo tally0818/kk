@@ -63,8 +63,19 @@ class CasualLM(LLMBase):
                 device_map="auto",
             ).eval()
 
-            tokenizer_path = self.lora_path if self.lora_path is not None else self.arch
-            tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+            tokenizer_source = self.arch
+            if self.lora_path is not None:
+                try:
+                    tokenizer = AutoTokenizer.from_pretrained(self.lora_path)
+                    tokenizer_source = self.lora_path
+                except Exception:
+                    print(
+                        f"> No tokenizer found in adapter '{self.lora_path}'. "
+                        f"Falling back to base tokenizer '{self.arch}'."
+                    )
+                    tokenizer = AutoTokenizer.from_pretrained(self.arch)
+            else:
+                tokenizer = AutoTokenizer.from_pretrained(self.arch)
 
             if self.lora_path is not None:
                 from peft import PeftModel
@@ -93,7 +104,8 @@ class CasualLM(LLMBase):
             )
         else:
             print(
-                f"> Loading base model '{model_path}' with LoRA adapter '{self.lora_path}'."
+                f"> Loading base model '{model_path}' with LoRA adapter '{self.lora_path}' "
+                f"(tokenizer='{tokenizer_source}')."
             )
 
     def query(self, prompt):
