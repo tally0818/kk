@@ -132,6 +132,9 @@ def get_subjects_to_eval(args):
 def main(args):
 
     model_short_name = "/".join(args.model.split("/")[-2:])
+    if args.lora_path:
+        lora_short_name = "-".join(args.lora_path.strip("/").split("/")[-2:])
+        model_short_name = f"{model_short_name}__lora__{lora_short_name}"
 
     prefix = os.path.join(
         os.path.join(args.save_dir, "{}_{}shot".format(
@@ -179,6 +182,19 @@ if __name__ == "__main__":
     parser.add_argument("--save_dir", "-s", type=str, default="result_qa", help="Save directory")
     parser.add_argument("--model", "-m", type=str, required=True, help="Model name or path")
     parser.add_argument("--arch", type=str, default=None, help="Model architecture")
+    parser.add_argument(
+        "--lora_path",
+        "--adapter_path",
+        dest="lora_path",
+        type=str,
+        default=None,
+        help="Optional LoRA adapter path to load on top of --model",
+    )
+    parser.add_argument(
+        "--no_merge_lora",
+        action="store_true",
+        help="Keep LoRA adapter unmerged (default merges LoRA into base model)",
+    )
     parser.add_argument("--config", "-c", type=str, default="", help="Configuration string")
     parser.add_argument("--max_token", type=int, default=1024, help="Maximum number of tokens")
     parser.add_argument("--limit", type=int, default=None, help="Limit the number of examples")

@@ -11,6 +11,8 @@ class CasualLM(LLMBase):
     Parameters:
     - model_path (str): The path/name for the desired language model.
     - arch (str, optional): The model architecture if different from model_path.
+    - lora_path (str, optional): LoRA adapter path to load on top of base model.
+    - merge_lora (bool): Whether to merge LoRA weights into the base model.
     - use_vllm (bool): Whether to use vLLM for inference.
     - max_tokens (int): Maximum number of tokens to generate.
     """
@@ -21,8 +23,12 @@ class CasualLM(LLMBase):
         arch=None,
         use_vllm=False,
         max_tokens=2048,
+        lora_path=None,
+        merge_lora=True,
     ):
         self.arch = arch if arch is not None else model_path
+        self.lora_path = lora_path if lora_path else None
+        self.merge_lora = merge_lora
         self.tokenizer_use_fast = True
         self.max_tokens = max_tokens
         self.use_vllm=use_vllm
@@ -32,6 +38,11 @@ class CasualLM(LLMBase):
         if model_path is None:
             model_path = self.model_path
         if self.use_vllm:
+            if self.lora_path is not None:
+                raise ValueError(
+                    "LoRA loading is only supported in non-vLLM mode in CasualLM. "
+                    "Set --use_vllm off or pass a merged checkpoint."
+                )
             from vllm import LLM
 
             self.model = LLM(
@@ -52,17 +63,38 @@ class CasualLM(LLMBase):
                 device_map="auto",
             ).eval()
 
-            tokenizer = AutoTokenizer.from_pretrained(self.arch)
+            tokenizer_path = self.lora_path if self.lora_path is not None else self.arch
+            tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+
+            if self.lora_path is not None:
+                from peft import PeftModel
+
+                model.resize_token_embeddings(len(tokenizer))
+                model = PeftModel.from_pretrained(model, self.lora_path)
+                if self.merge_lora:
+                    model = model.merge_and_unload()
+                model = model.eval()
+
             tokenizer.padding_side = "left"
-            tokenizer.pad_token = tokenizer.eos_token
-            model.generation_config.pad_token_id = model.generation_config.eos_token_id
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+            if (
+                getattr(model, "generation_config", None) is not None
+                and tokenizer.eos_token_id is not None
+            ):
+                model.generation_config.pad_token_id = tokenizer.eos_token_id
 
             self.model = model
             self.tokenizer = tokenizer
-        
-        print(
-            f"> Loading the provided {self.arch} checkpoint from '{model_path}'."
-        )
+
+        if self.lora_path is None:
+            print(
+                f"> Loading the provided {self.arch} checkpoint from '{model_path}'."
+            )
+        else:
+            print(
+                f"> Loading base model '{model_path}' with LoRA adapter '{self.lora_path}'."
+            )
 
     def query(self, prompt):
         return self.query_generation(prompt)

@@ -69,6 +69,8 @@ def load_llm(args):
         llm = CasualLM(
             model_path=args.model,
             arch=args.arch,
+            lora_path=getattr(args, "lora_path", None),
+            merge_lora=not getattr(args, "no_merge_lora", False),
             use_vllm=args.use_vllm,
             max_tokens=args.max_token,
         )
