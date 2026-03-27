@@ -292,6 +292,12 @@ if __name__ == "__main__":
     )
     parser.add_argument("--config", "-c", type=str, default="", help="Configuration string")
     parser.add_argument("--max_token", type=int, default=1024, help="Maximum number of tokens")
+    parser.add_argument(
+        "--max_model_len",
+        type=int,
+        default=None,
+        help="Optional vLLM max context length override (e.g., 4096).",
+    )
     parser.add_argument("--limit", type=int, default=None, help="Limit the number of examples")
     parser.add_argument("--cot", action="store_true", help="Use chain-of-thought prompting")
     parser.add_argument("--no_linebreak", action="store_true", help="Remove line breaks")
@@ -316,6 +322,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.num_generation < 1:
         raise ValueError("--num_generation must be >= 1")
+    if args.max_model_len is not None and args.max_model_len < 1:
+        raise ValueError("--max_model_len must be >= 1")
     if args.use_vllm:
         os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
     init_seed(seed_cuda=not args.use_vllm)

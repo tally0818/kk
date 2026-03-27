@@ -95,6 +95,7 @@ def load_llm(args):
             merge_lora=not getattr(args, "no_merge_lora", False),
             use_vllm=args.use_vllm,
             max_tokens=args.max_token,
+            max_model_len=getattr(args, "max_model_len", None),
         )
     return llm
 

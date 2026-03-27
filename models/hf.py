@@ -15,6 +15,7 @@ class CasualLM(LLMBase):
     - merge_lora (bool): Whether to merge LoRA weights into the base model.
     - use_vllm (bool): Whether to use vLLM for inference.
     - max_tokens (int): Maximum number of tokens to generate.
+    - max_model_len (int, optional): Override vLLM max model context length.
     """
 
     def __init__(
@@ -23,6 +24,7 @@ class CasualLM(LLMBase):
         arch=None,
         use_vllm=False,
         max_tokens=2048,
+        max_model_len=None,
         lora_path=None,
         merge_lora=True,
     ):
@@ -32,6 +34,7 @@ class CasualLM(LLMBase):
         self.tokenizer_use_fast = True
         self.max_tokens = max_tokens
         self.use_vllm=use_vllm
+        self.max_model_len = max_model_len
         self.lora_request = None
         super().__init__(model_path=model_path)
 
@@ -69,6 +72,8 @@ class CasualLM(LLMBase):
                 "tokenizer": model_path,
                 "gpu_memory_utilization": 0.9,
             }
+            if self.max_model_len is not None:
+                llm_kwargs["max_model_len"] = self.max_model_len
             self.lora_request = None
             if self.lora_path is not None:
                 from vllm.lora.request import LoRARequest
