@@ -316,5 +316,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.num_generation < 1:
         raise ValueError("--num_generation must be >= 1")
-    init_seed()
+    if args.use_vllm:
+        os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+    init_seed(seed_cuda=not args.use_vllm)
     main(args)

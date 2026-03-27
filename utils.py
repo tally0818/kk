@@ -70,12 +70,12 @@ def batch_decode_vllm(
     return all_responses
 
 
-def init_seed(seed=42):
+def init_seed(seed=42, seed_cuda=True):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.random.manual_seed(seed)
-    if torch.cuda.is_available():
+    if seed_cuda and torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
 
 
