@@ -53,8 +53,11 @@ def batch_decode_vllm(
             temperature=temperature,
             n=num_generation,
         )
+        generate_kwargs = {}
+        if getattr(llm, "lora_request", None) is not None:
+            generate_kwargs["lora_request"] = llm.lora_request
         outputs = llm.model.generate(
-            batch_prompts, sampling_params
+            batch_prompts, sampling_params, **generate_kwargs
         )
         if num_generation == 1:
             responses = [output.outputs[0].text for output in outputs]

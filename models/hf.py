@@ -32,26 +32,68 @@ class CasualLM(LLMBase):
         self.tokenizer_use_fast = True
         self.max_tokens = max_tokens
         self.use_vllm=use_vllm
+        self.lora_request = None
         super().__init__(model_path=model_path)
+
+    def _infer_lora_rank(self):
+        if self.lora_path is None:
+            return None
+
+        adapter_config_path = os.path.join(self.lora_path, "adapter_config.json")
+        if not os.path.isfile(adapter_config_path):
+            return None
+
+        try:
+            with open(adapter_config_path, "r", encoding="utf-8") as f:
+                adapter_config = json.load(f)
+            rank = adapter_config.get("r")
+            rank_pattern = adapter_config.get("rank_pattern", {})
+            if isinstance(rank_pattern, dict) and rank_pattern:
+                pattern_ranks = [int(v) for v in rank_pattern.values()]
+                rank = max(int(rank) if rank is not None else 0, max(pattern_ranks))
+            if rank is not None:
+                return int(rank)
+        except Exception as e:
+            print(f"> Failed to infer LoRA rank from '{adapter_config_path}': {e}")
+        return None
 
     def load_model(self, model_path=None):
         if model_path is None:
             model_path = self.model_path
         if self.use_vllm:
-            if self.lora_path is not None:
-                raise ValueError(
-                    "LoRA loading is only supported in non-vLLM mode in CasualLM. "
-                    "Set --use_vllm off or pass a merged checkpoint."
-                )
             from vllm import LLM
 
+            tokenizer_source = self.arch
+            llm_kwargs = {
+                "model": model_path,
+                "tokenizer": model_path,
+                "gpu_memory_utilization": 0.9,
+            }
+            self.lora_request = None
+            if self.lora_path is not None:
+                from vllm.lora.request import LoRARequest
+
+                llm_kwargs["enable_lora"] = True
+                lora_rank = self._infer_lora_rank()
+                llm_kwargs["max_lora_rank"] = max(8, lora_rank) if lora_rank is not None else 64
+                self.lora_request = LoRARequest("adapter", 1, self.lora_path)
+                try:
+                    tokenizer = AutoTokenizer.from_pretrained(self.lora_path)
+                    tokenizer_source = self.lora_path
+                except Exception:
+                    print(
+                        f"> No tokenizer found in adapter '{self.lora_path}'. "
+                        f"Falling back to base tokenizer '{self.arch}'."
+                    )
+                    tokenizer = AutoTokenizer.from_pretrained(self.arch)
+            else:
+                tokenizer = AutoTokenizer.from_pretrained(self.arch)
+
             self.model = LLM(
-                model=model_path,
-                tokenizer=model_path,
-                gpu_memory_utilization=0.9,
+                **llm_kwargs,
             )
 
-            self.tokenizer = AutoTokenizer.from_pretrained(self.arch)
+            self.tokenizer = tokenizer
         else:
 
             torch_dtype = torch.bfloat16
@@ -97,16 +139,23 @@ class CasualLM(LLMBase):
 
             self.model = model
             self.tokenizer = tokenizer
+            self.lora_request = None
 
         if self.lora_path is None:
             print(
                 f"> Loading the provided {self.arch} checkpoint from '{model_path}'."
             )
         else:
-            print(
-                f"> Loading base model '{model_path}' with LoRA adapter '{self.lora_path}' "
-                f"(tokenizer='{tokenizer_source}')."
-            )
+            if self.use_vllm:
+                print(
+                    f"> Loading base model '{model_path}' with vLLM LoRA adapter "
+                    f"'{self.lora_path}' (tokenizer='{tokenizer_source}')."
+                )
+            else:
+                print(
+                    f"> Loading base model '{model_path}' with LoRA adapter '{self.lora_path}' "
+                    f"(tokenizer='{tokenizer_source}')."
+                )
 
     def query(self, prompt, **kwargs):
         return self.query_generation(prompt, **kwargs)
@@ -121,8 +170,12 @@ class CasualLM(LLMBase):
                     max_tokens=self.max_tokens,
                     temperature=temperature if do_sample else 0.0,
                 )
+                generate_kwargs = {}
+                if self.lora_request is not None:
+                    generate_kwargs["lora_request"] = self.lora_request
                 outputs = self.model.generate(
                     [prompt], sampling_params,
+                    **generate_kwargs,
                 )
                 pred = outputs[0].outputs[0].text
             else:
