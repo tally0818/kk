@@ -25,7 +25,7 @@ class Claude(LLMBase):
 
         self.num_tokens = 0
 
-    def query(self, prompt):
+    def query(self, prompt, **kwargs):
         pred = self.chat_query(prompt)
         return pred
 

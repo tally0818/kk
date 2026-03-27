@@ -21,7 +21,7 @@ class ChatGPT(LLMBase):
         self.parameters = {"max_tokens": max_tokens, "temperature": temperature}
         self.num_tokens = 0
 
-    def query(self, prompt):
+    def query(self, prompt, **kwargs):
         pred = self.chat_query(prompt)
 
         return pred

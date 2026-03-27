@@ -108,21 +108,28 @@ class CasualLM(LLMBase):
                 f"(tokenizer='{tokenizer_source}')."
             )
 
-    def query(self, prompt):
-        return self.query_generation(prompt)
+    def query(self, prompt, **kwargs):
+        return self.query_generation(prompt, **kwargs)
     
     @torch.no_grad()
-    def query_generation(self, prompt):
+    def query_generation(self, prompt, do_sample=False, temperature=0.0):
         try:
             if self.use_vllm:
                 from vllm import SamplingParams
 
-                sampling_params = SamplingParams(max_tokens=self.max_tokens)
+                sampling_params = SamplingParams(
+                    max_tokens=self.max_tokens,
+                    temperature=temperature if do_sample else 0.0,
+                )
                 outputs = self.model.generate(
                     [prompt], sampling_params,
                 )
                 pred = outputs[0].outputs[0].text
             else:
+                gen_kwargs = {"max_new_tokens": self.max_tokens, "do_sample": do_sample}
+                if do_sample:
+                    gen_kwargs["temperature"] = temperature
+
                 if self.model_path in [
                     "deepseek-ai/deepseek-math-7b-instruct",
                     "AI-MO/NuminaMath-7B-CoT",
@@ -136,7 +143,7 @@ class CasualLM(LLMBase):
                     )
                     outputs = self.model.generate(
                         input_tensor.to(self.model.device),
-                        max_new_tokens=self.max_tokens,
+                        **gen_kwargs,
                     )
                     pred = self.tokenizer.decode(
                         outputs[0][input_tensor.shape[1] :], skip_special_tokens=True
@@ -146,7 +153,8 @@ class CasualLM(LLMBase):
                         self.model.device
                     )
                     generated_ids = self.model.generate(
-                        **model_inputs, max_new_tokens=self.max_tokens
+                        **model_inputs,
+                        **gen_kwargs,
                     )
                     pred = self.tokenizer.batch_decode(
                         generated_ids[:, model_inputs["input_ids"].shape[1] :],

@@ -2,31 +2,59 @@ import argparse
 import json
 import os
 import numpy as np
-import random
-import torch
 import time
-from dataset.kk import KKProcessor
-from utils import load_eval_records, load_jsonl, write_jsonl, batch_decode_vllm, init_seed, load_llm
 
+from dataset.kk import KKProcessor
+from utils import (
+    load_eval_records,
+    load_jsonl,
+    write_jsonl,
+    batch_decode_vllm,
+    init_seed,
+    load_llm,
+)
+
+
+def _normalize_correct_list(record):
+    if "correct_list" in record:
+        return [int(x) for x in record["correct_list"]]
+    return [int(record.get("correct", 0))]
+
+
+def _compute_pass_at_k(correct_lists, max_k):
+    """Compute pass@k from per-problem sampled correctness lists."""
+    if not correct_lists:
+        return {k: 0.0 for k in range(1, max_k + 1)}
+
+    pass_at_k = {}
+    for k in range(1, max_k + 1):
+        pass_flags = []
+        for correct_list in correct_lists:
+            use_k = min(k, len(correct_list))
+            pass_flags.append(int(any(correct_list[:use_k])) if use_k > 0 else 0)
+        pass_at_k[k] = float(np.mean(pass_flags))
+    return pass_at_k
 
 
 def eval_subject(args, subject, llm, test_records, kk_proc, exist_result_records):
     """Evaluate one subject."""
-   
     cors = []
+    subject_correct_lists = []
+
     start_index = len(exist_result_records)
     print(f"Found existing {start_index} records in {subject}")
     for i in range(start_index):
-        cors.append(exist_result_records[i]["correct"])
+        correct_list = _normalize_correct_list(exist_result_records[i])
+        subject_correct_lists.append(correct_list)
+        cors.append(int(correct_list[0]))
 
     eval_start_time = time.time()
+
     # Prepare all prompts
     prompts = []
     labels = []
     for i in range(start_index, len(test_records)):
-        prompt, label = kk_proc.gen_test_prompt(
-            args.ntrain, test_records, i, args.model
-        )
+        prompt, label = kk_proc.gen_test_prompt(args.ntrain, test_records, i, args.model)
         prompts.append(prompt)
         if i == start_index:
             print(f"Sample prompt:\n{prompt}")
@@ -34,83 +62,134 @@ def eval_subject(args, subject, llm, test_records, kk_proc, exist_result_records
 
     # Get responses
     if args.use_vllm:
-        responses = batch_decode_vllm(llm, prompts, batch_size=args.batch_size)
+        responses = batch_decode_vllm(
+            llm,
+            prompts,
+            batch_size=args.batch_size,
+            num_generation=args.num_generation,
+            temperature=args.temperature if args.num_generation > 1 else 0.0,
+        )
+        if args.num_generation == 1:
+            responses = [[response] for response in responses]
     else:
         responses = []
+        do_sample = args.num_generation > 1
+        temperature = args.temperature if do_sample else 0.0
         for index, prompt in enumerate(prompts):
-            response = llm.query(prompt)
-            responses.append(response)
+            response_list = []
+            for _ in range(args.num_generation):
+                response = llm.query(
+                    prompt,
+                    do_sample=do_sample,
+                    temperature=temperature,
+                )
+                response_list.append(response)
+            responses.append(response_list)
             if index % 1 == 0:
-                print(f"\nResponse {index}:\n{response}")
+                print(f"\nResponse {index} (sample 0):\n{response_list[0]}")
                 print(f"\nLabel {index}:\n{labels[index]}")
 
     # Process results
-    for i, (prompt, label, response) in enumerate(zip(prompts, labels, responses), start=start_index):
-        cor, parsed_pred, reformat_gold_conditions = kk_proc._parse_cot_eval(response, label, args.model)
+    for i, (prompt, label, response_list) in enumerate(
+        zip(prompts, labels, responses), start=start_index
+    ):
+        correct_list = []
+        parsed_pred_list = []
+        reformat_gold_conditions = None
 
-        if i % 1 == 0:
-            print(f"\nPrompt {i}:{prompt}"
-                    f"\nResponse {i}:{response}"
-                    f"\nPrediction {i}:{parsed_pred}"
-                    f"\nLabel {i}:{reformat_gold_conditions}"
-                    f"\nCorrect {i}:{cor}")
+        for gen_i, response in enumerate(response_list):
+            cor, parsed_pred, reformat_gold_conditions = kk_proc._parse_cot_eval(
+                response, label, args.model
+            )
+            correct_list.append(int(cor))
+            parsed_pred_list.append(parsed_pred)
 
-        cors.append(cor)
+            print(
+                f"\nPrompt {i} sample {gen_i}:{prompt}"
+                f"\nResponse {i} sample {gen_i}:{response}"
+                f"\nPrediction {i} sample {gen_i}:{parsed_pred}"
+                f"\nLabel {i}:{reformat_gold_conditions}"
+                f"\nCorrect {i} sample {gen_i}:{cor}"
+            )
+
+        pass_at_1 = int(correct_list[0])
+        pass_at_n = int(any(correct_list))
+        cors.append(pass_at_1)
+        subject_correct_lists.append(correct_list)
+
         new_item = {
-            'quiz': test_records[i]['quiz'], 
-            'names': test_records[i]['names'],
-            'solution': test_records[i]['solution'],
-            'solution_text': test_records[i]['solution_text'],
-            'solution_text_format': test_records[i]['solution_text_format'],
-            'index': test_records[i]['index'],
-            'predicts': parsed_pred,
-            'labels': reformat_gold_conditions,
-            'correct': cor,
-            'response': response,
-            'prompts': prompt,
+            "quiz": test_records[i]["quiz"],
+            "names": test_records[i]["names"],
+            "solution": test_records[i]["solution"],
+            "solution_text": test_records[i]["solution_text"],
+            "solution_text_format": test_records[i]["solution_text_format"],
+            "index": test_records[i]["index"],
+            "predicts": parsed_pred_list[0],
+            "predicts_list": parsed_pred_list,
+            "labels": reformat_gold_conditions,
+            "correct": pass_at_1,
+            "correct_list": correct_list,
+            "pass_at_1": pass_at_1,
+            f"pass_at_{args.num_generation}": pass_at_n,
+            "response": response_list[0],
+            "response_list": response_list,
+            "prompts": prompt,
         }
         exist_result_records.append(new_item)
 
     eval_end_time = time.time()
     eval_time = eval_end_time - eval_start_time
-    acc = np.mean(cors)
-    cors = np.array(cors)
+    pass_at_k = _compute_pass_at_k(subject_correct_lists, args.num_generation)
+    acc = pass_at_k[1]
+    cors = np.array(cors, dtype=np.int32)
 
-    print("Average accuracy {:.3f} - {}".format(acc, subject))
+    print("Pass@1 {:.3f} - {}".format(acc, subject))
+    for k in range(1, args.num_generation + 1):
+        print(f"Pass@{k} {pass_at_k[k]:.3f} - {subject}")
     print(f"Total evaluation time: {eval_time:.2f} seconds")
 
-    return cors, acc, exist_result_records
+    return cors, acc, pass_at_k, subject_correct_lists, exist_result_records
 
 
 def load_limited_test_records(args, subject, exist_result_records):
     """Load limited test records based on given arguments."""
     test_records = load_eval_records(args, subject)
-    
+
     if args.limit is not None:
         test_records = test_records.select(range(min(args.limit, len(test_records))))
         if args.limit <= len(exist_result_records):
-            return None # have finished  exp
-    
+            return None  # have finished exp
+
     return test_records
 
-def save_final_acc_results(all_cors, results, fname):
-    """Process final results, calculate average accuracy, and save to file."""
+
+def save_final_acc_results(all_cors, all_correct_lists, results, fname, num_generation):
+    """Process final results, calculate weighted pass@k, and save to file."""
     if all_cors:
-        weighted_acc = np.mean(np.concatenate(all_cors))
+        weighted_acc = float(np.mean(np.concatenate(all_cors)))
         results["weighted_accuracy"] = weighted_acc
-        print(f"Average accuracy: {weighted_acc:.3f}")
+        print(f"Weighted Pass@1: {weighted_acc:.3f}")
+
+        weighted_pass_at_k = _compute_pass_at_k(all_correct_lists, num_generation)
+        results["weighted_pass_at_k"] = {
+            f"pass@{k}": weighted_pass_at_k[k] for k in range(1, num_generation + 1)
+        }
+        for k in range(1, num_generation + 1):
+            print(f"Weighted Pass@{k}: {weighted_pass_at_k[k]:.3f}")
 
         with open(fname, "w") as f:
             json.dump(results, f)
+
 
 def load_previous_acc_results(fname):
     """Load previous accuracy results."""
     acc_results = {"subject": {}}
     if os.path.isfile(fname):
-        with open(fname, 'r', encoding='utf-8') as file:
+        with open(fname, "r", encoding="utf-8") as file:
             acc_results = json.load(file)
         print(f"Previous Results loaded successfully: {acc_results}")
     return acc_results
+
 
 def get_subjects_to_eval(args):
     """Get subjects to evaluate."""
@@ -130,19 +209,21 @@ def get_subjects_to_eval(args):
 
 
 def main(args):
-
     model_short_name = "/".join(args.model.split("/")[-2:])
     if args.lora_path:
         lora_short_name = "-".join(args.lora_path.strip("/").split("/")[-2:])
         model_short_name = f"{model_short_name}__lora__{lora_short_name}"
 
     prefix = os.path.join(
-        os.path.join(args.save_dir, "{}_{}shot".format(
-            model_short_name, args.ntrain))
+        os.path.join(args.save_dir, "{}_{}shot".format(model_short_name, args.ntrain))
     )
 
-    args.config += f"_token{args.max_token}{('_cot' if args.cot else '')}" \
+    args.config += (
+        f"_token{args.max_token}{('_cot' if args.cot else '')}"
         f"_{args.split}{('_' + args.problem_type if args.problem_type != 'clean' else '')}"
+        f"_gen{args.num_generation}"
+        f"{(f'_temp{args.temperature:g}' if args.num_generation > 1 else '')}"
+    )
 
     output_folder = os.path.join(prefix, args.config)
     acc_fname = os.path.join(prefix, f"result_{args.config}.json")
@@ -157,22 +238,36 @@ def main(args):
 
     llm = None
     all_cors = []
+    all_correct_lists = []
     for subject in subjects:
         result_outfile = os.path.join(output_folder, "{}.jsonl".format(subject))
         exist_result_records = load_jsonl(result_outfile) if os.path.exists(result_outfile) else []
         test_records = load_limited_test_records(args, subject, exist_result_records)
         if test_records is None:
-            continue 
+            continue
 
         llm = llm or load_llm(args)
-        
-        cors, acc, result_records = eval_subject(args, subject, llm, test_records, kk_proc, exist_result_records)
+
+        cors, acc, pass_at_k, subject_correct_lists, result_records = eval_subject(
+            args, subject, llm, test_records, kk_proc, exist_result_records
+        )
 
         write_jsonl(result_outfile, result_records)
         all_cors.append(cors)
+        all_correct_lists.extend(subject_correct_lists)
         acc_results["subject"][subject] = acc
+        acc_results.setdefault("subject_pass_at_k", {})
+        acc_results["subject_pass_at_k"][subject] = {
+            f"pass@{k}": pass_at_k[k] for k in range(1, args.num_generation + 1)
+        }
 
-    save_final_acc_results(all_cors, acc_results, acc_fname)
+    save_final_acc_results(
+        all_cors,
+        all_correct_lists,
+        acc_results,
+        acc_fname,
+        args.num_generation,
+    )
 
 
 if __name__ == "__main__":
@@ -205,7 +300,21 @@ if __name__ == "__main__":
     parser.add_argument("--split", type=str, default="test", choices=["test", "train"], help="Data split to use")
     parser.add_argument("--eval_nppl", type=int, default=0, help="Number of people to evaluate")
     parser.add_argument("--problem_type", type=str, default="clean", help="Problem perturbation type")
+    parser.add_argument(
+        "--num_generation",
+        type=int,
+        default=1,
+        help="Number of samples to generate per problem (used for pass@k).",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=0.7,
+        help="Sampling temperature when --num_generation > 1.",
+    )
 
     args = parser.parse_args()
+    if args.num_generation < 1:
+        raise ValueError("--num_generation must be >= 1")
     init_seed()
     main(args)

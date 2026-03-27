@@ -18,12 +18,13 @@ class LLMBase:
     def load_model(self):
         pass
     
-    def query(self, text):
+    def query(self, text, **kwargs):
         """
         Query a model with a given text prompt.
         
         Parameters:
         - text (str): The text prompt to query the model.
+        - **kwargs: Backend-specific generation kwargs.
 
         Returns:
         - str: The model's output.

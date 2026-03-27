@@ -22,7 +22,13 @@ def write_jsonl(output_file, data):
             json_line = json.dumps(item)
             file.write(json_line + "\n")
 
-def batch_decode_vllm(llm, prompts, batch_size=32):
+def batch_decode_vllm(
+    llm,
+    prompts,
+    batch_size=32,
+    num_generation=1,
+    temperature=0.0,
+):
     """
     Perform batch decoding using vLLM.
 
@@ -30,20 +36,33 @@ def batch_decode_vllm(llm, prompts, batch_size=32):
     - llm: The vLLM model instance
     - prompts: List of prompts to process
     - batch_size: Number of prompts to process in each batch
+    - num_generation: Number of generations to sample per prompt
+    - temperature: Sampling temperature
 
     Returns:
-    - List of generated responses
+    - If num_generation == 1: List[str]
+    - If num_generation > 1: List[List[str]]
     """
     from vllm import SamplingParams  # type: ignore
 
     all_responses = []
     for i in range(0, len(prompts), batch_size):
         batch_prompts = prompts[i : i + batch_size]
-        sampling_params = SamplingParams(max_tokens=llm.max_tokens, temperature=0)
+        sampling_params = SamplingParams(
+            max_tokens=llm.max_tokens,
+            temperature=temperature,
+            n=num_generation,
+        )
         outputs = llm.model.generate(
             batch_prompts, sampling_params
         )
-        responses = [output.outputs[0].text for output in outputs]
+        if num_generation == 1:
+            responses = [output.outputs[0].text for output in outputs]
+        else:
+            responses = [
+                [candidate.text for candidate in output.outputs]
+                for output in outputs
+            ]
         all_responses.extend(responses)
     return all_responses
 
