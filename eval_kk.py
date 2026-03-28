@@ -21,18 +21,37 @@ def _normalize_correct_list(record):
     return [int(record.get("correct", 0))]
 
 
+def _estimate_pass_at_k(n, c, k):
+    """Unbiased pass@k estimator from Eq. (1) in arXiv:2107.03374."""
+    if n <= 0 or k <= 0:
+        return 0.0
+    c = max(0, min(int(c), int(n)))
+    if c == 0:
+        return 0.0
+
+    k = min(int(k), int(n))
+    if n - c < k:
+        return 1.0
+
+    denom_terms = np.arange(n - c + 1, n + 1, dtype=np.float64)
+    return float(1.0 - np.prod(1.0 - (k / denom_terms)))
+
+
 def _compute_pass_at_k(correct_lists, max_k):
-    """Compute pass@k from per-problem sampled correctness lists."""
+    """Compute pass@k using Eq. (1) estimator over per-problem (n, c)."""
     if not correct_lists:
         return {k: 0.0 for k in range(1, max_k + 1)}
 
+    num_samples = np.array([len(correct_list) for correct_list in correct_lists], dtype=np.int32)
+    num_correct = np.array([sum(correct_list) for correct_list in correct_lists], dtype=np.int32)
+
     pass_at_k = {}
     for k in range(1, max_k + 1):
-        pass_flags = []
-        for correct_list in correct_lists:
-            use_k = min(k, len(correct_list))
-            pass_flags.append(int(any(correct_list[:use_k])) if use_k > 0 else 0)
-        pass_at_k[k] = float(np.mean(pass_flags))
+        estimates = [
+            _estimate_pass_at_k(n=int(n), c=int(c), k=k)
+            for n, c in zip(num_samples, num_correct)
+        ]
+        pass_at_k[k] = float(np.mean(estimates)) if estimates else 0.0
     return pass_at_k
 
 
@@ -45,8 +64,10 @@ def eval_subject(args, subject, llm, test_records, kk_proc, exist_result_records
     print(f"Found existing {start_index} records in {subject}")
     for i in range(start_index):
         correct_list = _normalize_correct_list(exist_result_records[i])
+        n = len(correct_list)
+        c = sum(correct_list)
         subject_correct_lists.append(correct_list)
-        cors.append(int(correct_list[0]))
+        cors.append(_estimate_pass_at_k(n=n, c=c, k=1))
 
     eval_start_time = time.time()
 
@@ -112,8 +133,11 @@ def eval_subject(args, subject, llm, test_records, kk_proc, exist_result_records
                 f"\nCorrect {i} sample {gen_i}:{cor}"
             )
 
-        pass_at_1 = int(correct_list[0])
-        pass_at_n = int(any(correct_list))
+        num_samples = len(correct_list)
+        num_correct = sum(correct_list)
+        first_correct = int(correct_list[0]) if correct_list else 0
+        pass_at_1 = _estimate_pass_at_k(n=num_samples, c=num_correct, k=1)
+        pass_at_n = _estimate_pass_at_k(n=num_samples, c=num_correct, k=num_samples)
         cors.append(pass_at_1)
         subject_correct_lists.append(correct_list)
 
@@ -127,7 +151,7 @@ def eval_subject(args, subject, llm, test_records, kk_proc, exist_result_records
             "predicts": parsed_pred_list[0],
             "predicts_list": parsed_pred_list,
             "labels": reformat_gold_conditions,
-            "correct": pass_at_1,
+            "correct": first_correct,
             "correct_list": correct_list,
             "pass_at_1": pass_at_1,
             f"pass_at_{args.num_generation}": pass_at_n,
@@ -141,7 +165,7 @@ def eval_subject(args, subject, llm, test_records, kk_proc, exist_result_records
     eval_time = eval_end_time - eval_start_time
     pass_at_k = _compute_pass_at_k(subject_correct_lists, args.num_generation)
     acc = pass_at_k[1]
-    cors = np.array(cors, dtype=np.int32)
+    cors = np.array(cors, dtype=np.float32)
 
     print("Pass@1 {:.3f} - {}".format(acc, subject))
     for k in range(1, args.num_generation + 1):
